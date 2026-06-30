@@ -1,4 +1,6 @@
-# 🇦🇺 Australia Reddit/News Watch
+# 🐕 Dingo Dispatch — Australia Reddit/News Watch
+
+Delivered by the **Dingo Dispatch** Telegram bot ([@DingoDispatchBot](https://t.me/DingoDispatchBot)).
 
 A digital-detox-friendly watch on Australia-related Reddit and news. Claude polls
 periodically, filters out the routine noise, and **only pushes a notification when
@@ -29,15 +31,19 @@ New alerts are appended to `australia-watch-log.md` so you never get the same
 alert twice.
 
 ## Telegram setup (one-time)
-1. In Telegram, message **@BotFather** → `/newbot` → follow prompts → copy the
-   **bot token** it gives you.
-2. Send your new bot any message (say "hi") so it's allowed to message you.
-3. Message **@userinfobot** → it replies with your numeric **chat id**.
-4. In GitHub: **repo → Settings → Secrets and variables → Actions → New
+Bot is already created: **Dingo Dispatch** ([@DingoDispatchBot](https://t.me/DingoDispatchBot)).
+Remaining steps:
+1. Open [@DingoDispatchBot](https://t.me/DingoDispatchBot) and send it any
+   message (e.g. "hi") so it's allowed to DM you.
+2. Message **@userinfobot** → it replies with your numeric **chat id**.
+3. In GitHub: **repo → Settings → Secrets and variables → Actions → New
    repository secret**, add two secrets:
-   - `TELEGRAM_BOT_TOKEN` = the token from step 1
-   - `TELEGRAM_CHAT_ID` = the id from step 3
-5. Enable Actions if prompted (repo → Actions tab). Done — alerts start flowing.
+   - `TELEGRAM_BOT_TOKEN` = the token @BotFather gave you
+   - `TELEGRAM_CHAT_ID` = the id from step 2
+4. Enable Actions if prompted (repo → Actions tab). Done — alerts start flowing.
+
+> Security: the token is a password for your bot. Keep it only in the GitHub
+> secret above — never commit it. To rotate it, send `/revoke` to @BotFather.
 
 You can also run a check on demand: **Actions tab → Australia Watch → Run
 workflow** (optionally type a custom message to send yourself).

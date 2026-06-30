@@ -133,7 +133,7 @@ def main():
         # Google News titles are "Headline - Source"; split the source out.
         m = re.match(r"^(.*) - ([^-]+)$", title)
         headline, source = (m.group(1), m.group(2)) if m else (title, "")
-        body = f"🇦🇺 <b>{html.escape(headline)}</b>"
+        body = f"🐕 <b>Dingo Dispatch</b> 🇦🇺\n\n<b>{html.escape(headline)}</b>"
         if source:
             body += f"\n<i>{html.escape(source.strip())}</i>"
         if link:
