@@ -1,0 +1,44 @@
+name: Australia Watch
+
+on:
+  schedule:
+    # Every 3 hours (offset off :00 so we don't pile onto GitHub's busy minute).
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Optional curated alert text to send verbatim (HTML allowed). Leave blank to run a normal front-page scan."
+        required: false
+        default: ""
+
+concurrency:
+  group: australia-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # to commit the updated seen-state back
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run watcher
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WATCH_MESSAGE: ${{ github.event.inputs.message }}
+        run: python3 scripts/australia_watch.py
+
+      - name: Commit updated state
+        run: |
+          if [[ -n "$(git status --porcelain state/seen.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add state/seen.json
+            git commit -m "Australia watch: update seen state [skip ci]"
+            git push
+          else
+            echo "No state change."
+          fi
