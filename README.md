@@ -52,6 +52,22 @@ Remaining steps:
 > Security: the token is a password for your bot. Keep it only in the GitHub
 > secret above — never commit it. To rotate it, send `/revoke` to @BotFather.
 
+## Reddit API setup (one-time, ~2 min) — required for the good stuff
+Reddit blocks anonymous datacenter IPs (GitHub Actions gets `HTTP 403`), so the
+watcher reads Reddit through the **official API** with an app-only token. Free.
+1. Go to <https://www.reddit.com/prefs/apps> → **create another app…**
+2. Pick type **script**, name it anything (e.g. `dingo-dispatch`), set redirect
+   URI to `http://localhost` (unused but required). Create it.
+3. Copy the two values:
+   - **client id** — the short string just under the app name ("personal use script")
+   - **secret** — the longer `secret` field
+4. Add them as GitHub repo secrets (same place as the Telegram ones):
+   - `REDDIT_CLIENT_ID`
+   - `REDDIT_CLIENT_SECRET`
+
+Without these the Action is a safe no-op (sends nothing). With them, it reads the
+subreddits directly every 3 hours.
+
 You can also run a check on demand: **Actions tab → Australia Watch → Run
 workflow** (optionally type a custom message to send yourself).
 
@@ -60,5 +76,5 @@ workflow** (optionally type a custom message to send yourself).
   after ~60 days of zero repo activity — a single commit re-arms them.
 - The in-session smart layer only runs while a Claude session is alive and
   auto-expires after 7 days; ping me to re-arm. The Action covers the gaps.
-- Reddit's API is firewalled inside the Claude sandbox, but the GitHub Action
-  runs on GitHub's servers where it can read the subreddit feeds directly.
+- Reddit blocks anonymous datacenter IPs, so the Action authenticates with the
+  official Reddit API (see setup above). That's the one required key.

@@ -11,6 +11,7 @@ Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from the environment; if either
 is missing it does nothing (so the workflow is a safe no-op until you add the
 secrets).
 """
+import base64
 import html
 import json
 import os
@@ -48,17 +49,32 @@ NEWS_DOMAINS = (
 )
 
 
-def fetch_json(url):
-    """Fetch a Reddit JSON listing, trying www then old.reddit as a fallback."""
-    last_exc = None
-    for host_url in (url, url.replace("www.reddit.com", "old.reddit.com")):
-        try:
-            req = urllib.request.Request(host_url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read())
-        except Exception as exc:  # noqa: BLE001 - try the next host
-            last_exc = exc
-    raise last_exc
+def reddit_token():
+    """Get an app-only OAuth token. Reddit blocks anonymous datacenter IPs
+    (GitHub Actions gets HTTP 403), so authenticated access is required."""
+    cid = os.environ.get("REDDIT_CLIENT_ID")
+    secret = os.environ.get("REDDIT_CLIENT_SECRET")
+    if not cid or not secret:
+        return None
+    auth = base64.b64encode(f"{cid}:{secret}".encode()).decode()
+    data = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode()
+    req = urllib.request.Request(
+        "https://www.reddit.com/api/v1/access_token",
+        data=data,
+        headers={"Authorization": f"Basic {auth}", "User-Agent": UA},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read()).get("access_token")
+
+
+def fetch_listing(sub, token):
+    """Fetch a subreddit's top-of-day listing via the authenticated API."""
+    url = f"https://oauth.reddit.com/r/{sub}/{LISTING}?t={TIME}&limit={FETCH_LIMIT}&raw_json=1"
+    req = urllib.request.Request(
+        url, headers={"Authorization": f"bearer {token}", "User-Agent": UA}
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
 
 
 def is_newsy(post):
@@ -75,12 +91,11 @@ def interest_score(post):
     return (comments * 3 + ups) * self_bonus
 
 
-def gather_candidates():
+def gather_candidates(token):
     posts = []
     for sub in SUBREDDITS:
-        url = f"https://www.reddit.com/r/{sub}/{LISTING}.json?t={TIME}&limit={FETCH_LIMIT}"
         try:
-            data = fetch_json(url)
+            data = fetch_listing(sub, token)
         except Exception as exc:  # one bad sub shouldn't kill the run
             print(f"WARN: r/{sub} fetch failed: {exc}", file=sys.stderr)
             continue
@@ -165,10 +180,20 @@ def main():
         print("Sent curated message.")
         return 0
 
+    try:
+        token = reddit_token()
+    except Exception as exc:
+        print(f"ERROR: Reddit auth failed: {exc}", file=sys.stderr)
+        return 0
+    if not token:
+        print("No Reddit API creds set (REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET) "
+              "— add them to enable the Reddit feed. Safe no-op.")
+        return 0
+
     state = load_state()
     seen = set(state.get("seen", []))
 
-    fresh = [p for p in gather_candidates() if p.get("id") not in seen]
+    fresh = [p for p in gather_candidates(token) if p.get("id") not in seen]
     if not fresh:
         print("Nothing new & interesting right now.")
         return 0
