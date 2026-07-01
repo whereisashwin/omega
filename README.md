@@ -2,30 +2,37 @@
 
 Delivered by the **Dingo Dispatch** Telegram bot ([@DingoDispatchBot](https://t.me/DingoDispatchBot)).
 
-A digital-detox-friendly watch on Australia-related Reddit and news. Claude polls
-periodically, filters out the routine noise, and **only pushes a notification when
-something genuinely important happens** — so you can stay off Reddit and still get
-the dope.
+A digital-detox-friendly watch on Australian **Reddit POV content** — personal
+stories, spicy takes, funny/weird/wholesome threads — so you can stay off Reddit
+and still get the interesting stuff. It's tuned *away* from dry news headlines.
 
-## What counts as "important" (push-worthy)
-- Breaking national news: politics, economy, disasters, safety/emergencies
-- Major policy changes that affect daily life (tax, wages, rates, housing)
-- Big, high-engagement r/australia threads that signal a real event (not memes)
-- Anything most Australians would want to know *today*
+## What gets pinged (the good stuff)
+- **Personal stories & POV:** "what's it like…", life-in-Australia experiences,
+  first-person dilemmas, moments people share
+- **Spicy takes & debates:** high-engagement discussion threads people are
+  actually arguing about
+- **Funny / weird / wholesome:** r/straya humour, only-in-Australia moments,
+  wildlife chaos
+- Ranked by real discussion (comments) + upvotes, self-posts favoured
 
 ## What gets ignored (no push)
-- Routine discussion, memes, shitposts, recurring complaint threads
-- Low-engagement posts, duplicates of things already alerted
+- Dry news-link posts (the thing you're sick of), low-engagement posts
+- Stickied megathreads, NSFW, duplicates of things already sent
+
+## Sources
+`r/australia`, `r/AskAnAustralian`, `r/straya` — top posts of the day. Edit
+`SUBREDDITS` in `scripts/australia_watch.py` to add/remove communities.
 
 ## How it runs (two layers, both deliver to Telegram)
 1. **Durable backbone — GitHub Action** (`.github/workflows/australia-watch.yml`).
    Runs every 3 hours on GitHub's servers, so it survives this cloud session
-   ending. It pulls Australia's news front page, dedupes against
-   `state/seen.json`, and sends new top-of-front-page items to your Telegram.
+   ending. It pulls the top discussion/self-posts from the subreddits above,
+   filters out news + noise, dedupes against `state/seen.json`, and sends the
+   most interesting new ones to your Telegram.
 2. **Smart layer — in-session cron.** While a Claude session is alive, it does
-   LLM-judged web-search filtering (catches Reddit-specific events the news feed
-   misses) and delivers via the same workflow (`workflow_dispatch` with a
-   curated `message`), so the bot token only ever lives as a GitHub secret.
+   LLM-judged curation for extra-interesting POV threads and delivers via the
+   same workflow (`workflow_dispatch` with a curated `message`), so the bot
+   token only ever lives as a GitHub secret.
 
 New alerts are appended to `australia-watch-log.md` so you never get the same
 alert twice.
@@ -53,5 +60,5 @@ workflow** (optionally type a custom message to send yourself).
   after ~60 days of zero repo activity — a single commit re-arms them.
 - The in-session smart layer only runs while a Claude session is alive and
   auto-expires after 7 days; ping me to re-arm. The Action covers the gaps.
-- Reddit's API is firewalled in the Claude sandbox, so signal comes from web
-  search / news front page rather than the raw subreddit feed.
+- Reddit's API is firewalled inside the Claude sandbox, but the GitHub Action
+  runs on GitHub's servers where it can read the subreddit feeds directly.

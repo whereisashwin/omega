@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Australia news watcher.
+"""Dingo Dispatch — Australian Reddit POV watcher.
 
-Fetches Australia's news front page, finds genuinely-new front-page stories
-since the last run, and pushes them to Telegram. Designed to be detox-friendly:
-it only sends *new* top-of-front-page items, capped per run, so you get the
-signal without the firehose.
+Pulls the top *discussion & self-posts* from Australian subreddits and pushes
+the most interesting ones to Telegram. Tuned for POV/human content — personal
+stories, spicy takes, funny/weird/wholesome — and deliberately biased AWAY from
+dry news-link posts.
 
 No third-party dependencies (stdlib only) so it runs anywhere with python3.
 Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from the environment; if either
@@ -14,48 +14,87 @@ secrets).
 import html
 import json
 import os
-import re
 import sys
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
-# Australia (AU edition) Google News front page — reliable, no API key, already
-# ranked by importance. Add more feeds here and they get merged + deduped.
-FEEDS = [
-    "https://news.google.com/rss?hl=en-AU&gl=AU&ceid=AU:en",
-]
+# POV-heavy Australian communities. Discussion + self-posts live here, not the
+# news wire. Tune this list to taste.
+SUBREDDITS = ["australia", "AskAnAustralian", "straya"]
+# Reddit sorting: top posts of the day (community-vetted "interesting").
+LISTING = "top"
+TIME = "day"
 
 STATE_PATH = Path(__file__).resolve().parent.parent / "state" / "seen.json"
-UA = "Mozilla/5.0 (compatible; omega-australia-watch/1.0)"
+# Reddit wants a descriptive User-Agent; generic browser UAs get rate-limited.
+UA = "omega-dingo-dispatch/1.0 (Australian POV watcher; contact via github whereisashwin/omega)"
 
-# Only look at the top N items of each feed (the actual front page) and never
-# push more than MAX_PER_RUN at once — keeps it to real headlines, not a flood.
-TOP_N = 8
-MAX_PER_RUN = 3
-# Cap remembered IDs so state/seen.json doesn't grow forever.
-STATE_LIMIT = 500
+FETCH_LIMIT = 25          # how many top posts to consider per subreddit
+MAX_PER_RUN = 3           # never fire more than this per run (detox-friendly)
+MIN_SCORE = 80            # skip low-signal posts
+MIN_COMMENTS = 25         # a real discussion needs real comments
+SNIPPET_CHARS = 240       # how much of a self-post body to preview
+STATE_LIMIT = 800         # cap remembered IDs so state file stays small
+
+# Link posts pointing at these are "news" — the exact thing the user is sick of.
+# Self-posts (domain "self.<sub>") are always kept; these only filter link posts.
+NEWS_DOMAINS = (
+    "abc.net.au", "news.com.au", "theguardian.com", "smh.com.au", "theage.com.au",
+    "9news.com.au", "7news.com.au", "skynews.com.au", "sbs.com.au", "afr.com",
+    "theconversation.com", "reuters.com", "dailymail.co.uk", "brisbanetimes.com.au",
+    "watoday.com.au", "msn.com", "yahoo.com", "news.google.com", "crikey.com.au",
+    "canberratimes.com.au", "theaustralian.com.au", "nine.com.au", "perthnow.com.au",
+)
 
 
-def fetch(url):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
+def fetch_json(url):
+    """Fetch a Reddit JSON listing, trying www then old.reddit as a fallback."""
+    last_exc = None
+    for host_url in (url, url.replace("www.reddit.com", "old.reddit.com")):
+        try:
+            req = urllib.request.Request(host_url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except Exception as exc:  # noqa: BLE001 - try the next host
+            last_exc = exc
+    raise last_exc
 
 
-def parse_items(xml_bytes):
-    """Return [(item_id, title, link), ...] from an RSS feed."""
-    items = []
-    root = ET.fromstring(xml_bytes)
-    for item in root.iter("item"):
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        guid = (item.findtext("guid") or link).strip()
-        if not title:
+def is_newsy(post):
+    domain = (post.get("domain") or "").lower()
+    return any(nd in domain for nd in NEWS_DOMAINS)
+
+
+def interest_score(post):
+    """Rank by discussion first (comments = POV/engagement), then upvotes.
+    Self-posts get a bonus because they're the first-person content we want."""
+    comments = post.get("num_comments", 0)
+    ups = post.get("score", 0)
+    self_bonus = 1.5 if post.get("is_self") else 1.0
+    return (comments * 3 + ups) * self_bonus
+
+
+def gather_candidates():
+    posts = []
+    for sub in SUBREDDITS:
+        url = f"https://www.reddit.com/r/{sub}/{LISTING}.json?t={TIME}&limit={FETCH_LIMIT}"
+        try:
+            data = fetch_json(url)
+        except Exception as exc:  # one bad sub shouldn't kill the run
+            print(f"WARN: r/{sub} fetch failed: {exc}", file=sys.stderr)
             continue
-        items.append((guid, html.unescape(title), link))
-    return items
+        for child in data.get("data", {}).get("children", []):
+            p = child.get("data", {})
+            if p.get("stickied") or p.get("over_18") or p.get("pinned"):
+                continue
+            if p.get("score", 0) < MIN_SCORE or p.get("num_comments", 0) < MIN_COMMENTS:
+                continue
+            if not p.get("is_self") and is_newsy(p):  # drop news-link posts
+                continue
+            posts.append(p)
+    posts.sort(key=interest_score, reverse=True)
+    return posts
 
 
 def load_state():
@@ -78,12 +117,37 @@ def telegram_send(token, chat_id, text):
             "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML",
-            "disable_web_page_preview": "false",
+            "disable_web_page_preview": "true",
         }
     ).encode()
     req = urllib.request.Request(url, data=data, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.status
+
+
+def format_post(p):
+    title = html.escape(p.get("title", "").strip())
+    sub = p.get("subreddit", "")
+    link = "https://www.reddit.com" + p.get("permalink", "")
+    body = f"🐕 <b>Dingo Dispatch</b> 🇦🇺\n\n<b>{title}</b>"
+
+    selftext = (p.get("selftext") or "").strip()
+    if selftext:
+        snippet = selftext[:SNIPPET_CHARS].strip()
+        if len(selftext) > SNIPPET_CHARS:
+            snippet += "…"
+        body += f"\n\n{html.escape(snippet)}"
+    elif not p.get("is_self"):
+        # Link/image/video post — note where it points so context isn't lost.
+        dest = (p.get("url") or "").strip()
+        if dest and "reddit.com" not in dest:
+            body += f"\n\n🔗 {html.escape(dest)}"
+
+    body += (
+        f"\n\n<i>r/{html.escape(sub)} · 👍 {p.get('score', 0)} · "
+        f"💬 {p.get('num_comments', 0)}</i>\n{html.escape(link)}"
+    )
+    return body
 
 
 def main():
@@ -104,51 +168,24 @@ def main():
     state = load_state()
     seen = set(state.get("seen", []))
 
-    # Gather candidates from the top of each feed.
-    candidates = []
-    for feed in FEEDS:
-        try:
-            for item_id, title, link in parse_items(fetch(feed))[:TOP_N]:
-                candidates.append((item_id, title, link))
-        except Exception as exc:  # one bad feed shouldn't kill the run
-            print(f"WARN: feed failed {feed}: {exc}", file=sys.stderr)
-
-    # Keep order, drop already-seen and in-run duplicates.
-    fresh = []
-    batch_seen = set()
-    for item_id, title, link in candidates:
-        key = item_id or link
-        if key in seen or key in batch_seen:
-            continue
-        batch_seen.add(key)
-        fresh.append((key, title, link))
-
+    fresh = [p for p in gather_candidates() if p.get("id") not in seen]
     if not fresh:
-        print("Nothing new on the front page.")
+        print("Nothing new & interesting right now.")
         return 0
 
-    to_send = fresh[:MAX_PER_RUN]
     sent_keys = []
-    for key, title, link in to_send:
-        # Google News titles are "Headline - Source"; split the source out.
-        m = re.match(r"^(.*) - ([^-]+)$", title)
-        headline, source = (m.group(1), m.group(2)) if m else (title, "")
-        body = f"🐕 <b>Dingo Dispatch</b> 🇦🇺\n\n<b>{html.escape(headline)}</b>"
-        if source:
-            body += f"\n<i>{html.escape(source.strip())}</i>"
-        if link:
-            body += f"\n{html.escape(link)}"
+    for p in fresh[:MAX_PER_RUN]:
         try:
-            telegram_send(token, chat_id, body)
-            sent_keys.append(key)
-            print(f"Sent: {headline}")
+            telegram_send(token, chat_id, format_post(p))
+            sent_keys.append(p["id"])
+            print(f"Sent: r/{p.get('subreddit')} — {p.get('title')[:60]}")
         except Exception as exc:
-            print(f"ERROR sending '{headline}': {exc}", file=sys.stderr)
+            print(f"ERROR sending {p.get('id')}: {exc}", file=sys.stderr)
 
     # Only remember what we actually delivered, so a send failure retries later.
     state["seen"] = state.get("seen", []) + sent_keys
     save_state(state)
-    print(f"Done. Sent {len(sent_keys)} new item(s).")
+    print(f"Done. Sent {len(sent_keys)} interesting post(s).")
     return 0
 
 
