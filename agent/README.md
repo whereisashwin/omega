@@ -1,80 +1,89 @@
-# Claude Email/Drive Agent — droplet deployment
+# Claude Code on your droplet, wired to all your MCPs
 
-A persistent agent that runs on your own server, reads your Gmail + Google Drive,
-and **drafts** email replies on your behalf. It **never sends** — you review drafts
-in Gmail and send them yourself. This is a deliberate v1 safety choice (see below).
+Install the real Claude Code agent on a server you control, connect your MCP
+servers (Gmail, Drive, GitHub, …), and use it from anywhere via SSH. This gives
+you a persistent, always-available agent that can act via email/Drive/GitHub —
+not a one-shot chat session that disappears.
 
-## What it does
+## The pieces
 
-- Runs as an unprivileged systemd service on a timer (default: every 15 min).
-- On each run it asks Claude (via the Agent SDK) to:
-  - look at recent unread threads in your inbox,
-  - read Drive files if a thread references one,
-  - draft a reply as a **Gmail draft**.
-- You get normal Gmail draft notifications; you review and send.
+1. **Claude Code** (the CLI agent) installed globally on the droplet.
+2. **Auth** — an Anthropic API key (or a Claude subscription login).
+3. **MCP servers** registered at *user scope* so they're available in every
+   session: Gmail + Drive (Google Workspace), GitHub, and any others you add.
+4. **You**, connecting over SSH (use `tmux` so sessions survive disconnects).
 
-## The safety model (read this)
-
-Email is attacker-controlled input. A malicious message can try to steer any agent
-that reads it ("prompt injection"). This deployment mitigates that:
-
-1. **No send tool.** The agent's allowed-tools list contains read + `create draft`
-   only. The Gmail *send* tool is not granted, so injection cannot cause a send.
-2. **Least privilege OS user.** Runs as `claudeagent`, no sudo, no access to your
-   web root or the rest of the box. If the agent is ever compromised, blast radius
-   is its own home dir.
-3. **Read-only Google scopes recommended.** Use `gmail.readonly` + `drive.readonly`
-   + `gmail.compose` (compose is needed to create drafts but does NOT allow sending
-   existing mail). Do **not** grant `gmail.send` for v1.
-4. **Secrets locked down.** API key + OAuth creds live in `/etc/claude-agent/env`,
-   `chmod 600`, owned by `claudeagent`.
-5. **Kill switch.** `sudo systemctl stop claude-agent.timer` halts it instantly;
-   `uninstall.sh` removes it entirely.
-
-> Strongly recommended: run this on a **separate droplet**, not the one serving
-> ashwingoyal.com. If you must co-locate, the unprivileged-user isolation above is
-> the minimum bar.
-
-## What you provide (only you can do these)
-
-1. **Anthropic API key** — from console.anthropic.com.
-2. **Google OAuth client** — a Desktop OAuth client ID + secret with Gmail API and
-   Drive API enabled, and yourself added as a test user. See the main chat for the
-   Google Cloud console walkthrough.
-
-## Install (run on the droplet as root)
+## Install (run on the droplet)
 
 ```bash
-# 1. copy this agent/ folder to the droplet, e.g. scp -r agent root@YOUR_DROPLET:/opt/claude-agent-src
-# 2. on the droplet:
-cd /opt/claude-agent-src
+# copy this folder to the droplet, e.g.:
+#   scp -r agent root@YOUR_DROPLET:/opt/claude-setup
+cd /opt/claude-setup
+
+# 1. install Node + Claude Code (+ tmux, uv)
 sudo bash setup.sh
-# 3. fill in your secrets:
-sudo nano /etc/claude-agent/env      # paste API key + Google client id/secret
-# 4. one-time Google login (opens a device/URL auth flow, follow the printed link):
-sudo -u claudeagent /opt/claude-agent/venv/bin/python /opt/claude-agent/run_agent.py --auth
-# 5. start it:
-sudo systemctl enable --now claude-agent.timer
+
+# 2. add your secrets
+cp env.example ~/.claude-mcp.env && nano ~/.claude-mcp.env   # fill in keys
+
+# 3. register your MCP servers (reads ~/.claude-mcp.env)
+bash setup-mcp.sh
+
+# 4. sanity check
+claude mcp list
 ```
 
-## Watch it
+## Auth
+
+Two options, pick one:
+
+- **API key (simplest for a server):** put `ANTHROPIC_API_KEY=sk-ant-...` in your
+  shell profile (`~/.bashrc`) or `~/.claude-mcp.env`. Pay-per-token.
+- **Subscription login:** run `claude` once and follow the login prompt. On a
+  headless box you may need to complete the browser step on your laptop and paste
+  the token back; API key is less hassle for a server.
+
+## Using it
 
 ```bash
-systemctl status claude-agent.timer
-journalctl -u claude-agent.service -f     # live logs of each run
+ssh you@YOUR_DROPLET
+tmux new -s claude        # persistent session that survives disconnect
+claude                    # start the agent; all your MCP tools are available
+# ... later, reconnect:
+ssh you@YOUR_DROPLET
+tmux attach -t claude
 ```
 
-## Kill / remove
+Ask it things like *"summarize my unread emails and draft replies"* or
+*"find the contract in Drive and tell me the renewal date."* It has the tools
+because the MCP servers are registered.
+
+### Non-interactive / scheduled runs
+
+For unattended jobs (e.g. a nightly inbox digest), use print mode in cron:
 
 ```bash
-sudo systemctl stop claude-agent.timer    # pause
-sudo bash /opt/claude-agent-src/uninstall.sh   # remove everything
+claude -p "Summarize today's unread emails, create draft replies where needed." \
+  --allowedTools "mcp__google__*" >> ~/claude-digest.log 2>&1
 ```
 
-## Notes / things to verify on first run
+## Security model (important — read before granting Gmail/GitHub)
 
-- The MCP server used for Gmail/Drive is `workspace-mcp` (run via `uvx`). Tool names
-  like `create_gmail_draft` / `search_gmail_messages` come from that server; if it
-  updates and renames tools, adjust `ALLOWED_TOOLS` in `run_agent.py`.
-- First run will be a no-op if there are no unread threads — that's expected.
-- Tune cadence in `claude-agent.timer` (`OnUnitActiveSec`).
+- Anything the agent reads (email, issues, docs) is **attacker-controllable** and
+  can attempt prompt injection. Grant the **least** scope that works:
+  - Google: `gmail.readonly` + `gmail.compose` + `drive.readonly` (compose lets it
+    **draft**, not send). Add `gmail.send` only once you trust it.
+  - GitHub: a fine-grained PAT limited to the repos you actually want it touching.
+- Run Claude as a **normal user**, never root, and **not** as the user that owns
+  your web root, so a bad instruction can't touch the site serving ashwingoyal.com.
+  Ideally a **separate droplet** from the one running the website.
+- Consider `--permission-mode default` (asks before actions) rather than
+  auto-accept, at least until you've built trust.
+- Tokens live in `~/.claude-mcp.env` (`chmod 600`) and Claude's own config; revoke
+  anytime at https://myaccount.google.com/permissions and in the Anthropic console.
+
+## Remove
+
+```bash
+bash uninstall.sh
+```

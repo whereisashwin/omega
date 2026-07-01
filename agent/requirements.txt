@@ -1,4 +1,0 @@
-# Anthropic Claude Agent SDK (Python).
-# Pin a version you've verified; the API shape used in run_agent.py targets the
-# claude-agent-sdk package (query + ClaudeAgentOptions + mcp server config).
-claude-agent-sdk>=0.1.0
